@@ -34,7 +34,7 @@ class Roscov:
 		if len(pkgs) == 1:
 			pkgs = pkgs[0].split(" ")
 
-		for root, dirs, files in os.walk(os.getcwd())
+		for root, dirs, files in os.walk(os.getcwd()):
 			if not "devel" in dirs: 
 				sys.exit("Roscov: Error: devel/ directory not found. Current directory is not a catkin workspace.")
 			if not "src" in dirs:
