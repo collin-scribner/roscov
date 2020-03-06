@@ -10,14 +10,31 @@ import argparse
 import re
 import shlex
 import subprocess
+from statistics import mean
 
 class BrokenRegexException(Exception):
 	"""Raised when the regex strings in test_package() may be broken."""
 	pass
 
-class PackageNotFound(Exception):
+class PackageNotFoundException(Exception):
 	"""Raised when a package is not found by get_package_path"""
 	pass
+
+class TestFailedException(Exception):
+	"""Raised in the event a package fails 1 or more tests"""
+	def __init__(self):
+		self.numFailedPackages = 0
+
+class Package():
+	"""Used to store information for each package that is being tested"""
+	def __init__(self, name, path):
+		self.name = name
+		self.path = path
+		self.lineCount = count_lines_of_code(path)
+		self.hasTestDir = hasTestDir(path)
+
+	def setWeight(self, weight):
+		self.weight = weight
 
 def test_package(pkg, path=None, 
 					test_args=None, 
@@ -28,7 +45,7 @@ def test_package(pkg, path=None,
 	for the given package at the given path if one is given. If any tests fail, 
 	the coverage number returned will be negative.
 	
-	Default test command is `catkin run_tests <pkg> <default args>
+	Default test command is `catkin  <pkg> <default args>
 	Default args are `--no-status --no-deps --force-cmake --force-color`
 
 	Required arguments:
@@ -49,41 +66,31 @@ def test_package(pkg, path=None,
 	if not pkg:
 		raise Exception("<pkg> argument is required for test_package()")
 
-	if not path:
-		path = get_package_path(pkg)
-
-	test_cmd = "catkin run_tests "+pkg+" --no-status --no-deps --force-cmake --force-color "
-	"--cmake-args -DCMAKE_BUILD_TYPE="+cmake_build_type+" -DENABLE_COVERAGE_TESTING=ON "
-	"--catkin-make-args "+pkg+"_coverage"
+	test_cmd = "catkin build "+pkg+" -v --no-status --no-deps --force-color --catkin-make-args "+pkg+"_coverage_report"
 
 	re_failed_test = re.compile(r"(?<=Failed: )[1-9]*[0-9]*(?= packages failed.)") # Based on catkin output
-	re_coverage_pct = re.compile(r"Overall coverage rate:") # Based on code_coverage:0.2.4
+	re_coverage_pct = re.compile(r"Overall coverage rate:") # Based on code_coverage: 0.2.4
 	re_line_pct = re.compile(r"\d*\.\d*(?=%)")
-
-	# run tests on the package only if it contains a test/ directory
-	pkg_has_tests = False
-	for fname in os.listdir(path):
-		if os.path.isdir(os.path.join(path, fname)) and fname.lower() == "test":
-			pkg_has_tests = True
-	if not pkg_has_tests:
-		print("Package %s has no tests, so its coverage is 0%%" % pkg)
-		return 0
 
 	# Test the package with coverage enabled
 	print("Testing package %s..." % pkg)
 	proc = subprocess.Popen(shlex.split(test_cmd), universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 	pcts = []
-	tests_failed = False
-	get_pkg_percentages = False
+	get_pkg_percentages = False # TODO: Remove this variable, no clue what it does
+
+	# run tests on the package only if it contains a test/ directory
+	if not hasTestDir(pkg.path):
+		print("Package %s has no tests, so its coverage is 0%%" % pkg)
+		return 0
 
 	for line in proc.stdout:
 
 		if not suppress_catkin_output:
 			sys.stdout.write(line)
 
-		if re.match(re_failed_test, line): # more than 0 packages failed in the test
+		if re.match(re_failed_test, line):
 			sys.stderr.write("Unit tests failed for package: "+pkg+"\n")
-			tests_failed = True
+			raise TestFailedException(69) # TODO: Change this to be the actual number of tests failed
 
 		# track total avg of that package (equally weighted between lines covered and functions covered)
 		if get_pkg_percentages:
@@ -111,14 +118,13 @@ def test_package(pkg, path=None,
 	if not pcts:
 		raise BrokenRegexException("Error: possible broken regex in coverage.py (re_coverage_pct)")
 
-	coverage = (pcts[0] + pcts[1]) / 2
+	return mean([pcts[0], pcts[1]])
 
-	if tests_failed:
-		if coverage == 0:
-			return None
-		return -coverage
-
-	return coverage
+def hasTestDir(path):
+	for fname in os.listdir(path):
+		if os.path.isdir(os.path.join(path, fname)) and fname.lower() == "test":
+			return True
+	return False
 
 def count_lines_of_code(path):
 	"""Calculate and return linecount from 'path' using cloc and extracting 
@@ -127,13 +133,15 @@ def count_lines_of_code(path):
 	required arguments:
 		path 			the path at which the lines of code are counted
 	"""
-
-	proc1 = subprocess.Popen(shlex.split("cloc %s --quiet --csv" % path), stdout=subprocess.PIPE)
-	proc2 = subprocess.Popen(shlex.split("grep -i ',C++'"), stdin=proc1.stdout, stdout=subprocess.PIPE)
-	proc1.stdout.close()
-	linecount = proc2.stdout.read().decode(sys.stdout.encoding)
-
-	return int(linecount[linecount.rfind(',')+1:])
+	try:
+		proc1 = subprocess.Popen(shlex.split("cloc %s --quiet --csv" % path), stdout=subprocess.PIPE)
+		proc2 = subprocess.Popen(shlex.split("grep -i ',C++'"), stdin=proc1.stdout, stdout=subprocess.PIPE)
+		proc1.stdout.close()
+		linecount = proc2.stdout.read().decode(sys.stdout.encoding)
+		return int(linecount[linecount.rfind(',')+1:])
+	except FileNotFoundError:
+		print("Error: cloc not installed")
+		sys.exit(1)
 
 def get_package_path(pkg, debug=True):
 	"""Queries 'catkin locate' and returns the absolute path of 'pkg' in the 
@@ -145,56 +153,41 @@ def get_package_path(pkg, debug=True):
 	optional arguments:
 		debug 			if True, prints debug statements
 	"""
-	_str = ""
+	path = ""
 	try:
 		proc = subprocess.Popen(["catkin", "locate", pkg], universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-		_str = proc.stdout.read()
-		if _str.startswith('ERROR'):
-			raise PackageNotFound("Package %s not found with catkin locate:\n\t%s" % (pkg, _str))
+		path = proc.stdout.read()
+		if path.startswith('ERROR'):
+			raise PackageNotFoundException("Package %s not found with catkin locate:\n\t%s" % (pkg, path))
 		if debug:
 			print("Found package %s at path %s" % (pkg, path))
-		return _str.rstrip()
+		return path.rstrip()
 	except FileNotFoundError:
 		sys.exit("Error: Roscov: searching for package '%s' failed. Catkin is likely not installed." % pkg)
 
-def run_ws(packages):
-	pass
+def get_package(pkg, debug=True):
+	"""Used for turning a string input into a Package class
 
-def run_package(pkg):
-	pass
+	required arguments:
+		pkg 			the package to search for
 
-def run(packages, quiet_output=False, 
-				threshold=None, 
-				debug_statements=False):
+	optional arguments:
+		debug 			if True, prints debug statements
+	"""
+	path = get_package_path(pkg)
+	return Package(pkg, path)
 
-	totallines = 0
-	pkg_avgs = []
-	pkg_summaries = []
-	linecounts = []
-	unfound_pkgs = []
-	failed_pkgs = []
-	weighted_pcts = []
+def print_results(packages, unfound=None, failed=None, threshold=None):
+	"""Used for printing the final output of the tool
 
-	for pkg in packages:
+	required arguments:
+		packages 			list of Package objects tested
 
-		try:	
-			pkg_coverage = test_package(pkg, suppress_catkin_output=quiet_output)
-			if not pkg_coverage:
-				sys.exit("Error: no coverage data returned for package '%s'" % pkg) 
-
-			if pkg_coverage[3]:
-				failed_pkgs.append(pkg)
-
-			pkg_avgs.append(pkg_coverage[0])
-			pkg_summaries.append(pkg_coverage)
-
-			linecounts.append(count_lines_of_code(path))
-			totallines += linecounts[-1]
-
-		except PackageNotFound:
-			unfound_pkgs.append(pkg)
-
-	for pkg in unfound_pkgs:
+	optional arguments:
+		unfound_packages 	list of unfound packages in the test
+		failed_packages		list of failed packages in the test
+	"""
+	for pkg in unfound:
 		sys.stderr.write("Package not found: "+pkg+"\n")
 		packages.remove(pkg)
 
@@ -218,3 +211,45 @@ def run(packages, quiet_output=False,
 
 	if threshold and total_weighted_coverage < threshold:
 		sys.exit("Resulting total coverage is below threshold. Script exited with exit code 1.")
+
+def run(packages, quiet_output=False, 
+				threshold=None, 
+				debug=False):
+	"""General main method for this script
+
+	required arguments:
+		TODO 			
+
+	optional arguments:
+		TODO 			
+	"""
+
+	totallines = 0
+	pkg_totals = []
+	unfound_packages = []
+	failed_packages = []
+
+	test_packages = []
+	for pkg in packages:
+		try:
+			test_packages.append(get_package(pkg))
+		except PackageNotFoundException:
+			unfound_packages.append(pkg)
+
+	for pkg in test_packages:
+		try:	
+			coverage = test_package(pkg, suppress_catkin_output=quiet_output)
+
+			if not coverage:
+				sys.exit("Error: no coverage data obtainable for package '%s'" % pkg.name) 
+
+			pkg_avgs.append(coverage)
+			totallines += pkg.lineCount
+
+		except TestFailedException:
+			failed_packages.append(pkg.name)
+
+	print_results(test_packages, unfound=unfound_packages, failed=failed_packages)
+
+if __name__ == "__main__":
+	run(sys.argv[1:])

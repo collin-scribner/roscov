@@ -1,16 +1,16 @@
 import os
 import sys
 from setuptools import setup, find_packages
-from roscov.src import __version__
+from roscov import __version__
 
-exec(open(os.path.join(os.path.dirname(__file__), 'src', 'roscov', '__init__.py')).read())
+exec(open(os.path.join(os.path.dirname(__file__), 'roscov', '__init__.py')).read())
 
 setup(
     name='roscov',
     version=__version__,
     install_requires=['setuptools'],
     python_requires='>3.5.2',
-    package_dir={'': 'src'},
+    package_dir={'': '.'},
     packages=find_packages(),
     entry_points = {
         'console_scripts': [

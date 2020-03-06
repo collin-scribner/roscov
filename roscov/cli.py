@@ -5,7 +5,7 @@ import argparse
 from . import __version__
 from . import roscov
 
-class Roscov:
+class RoscovRunnable:
 
 	def __init__(self):
 		parser = argparse.ArgumentParser(usage='roscov [<args>] [<packages>]')
@@ -34,20 +34,21 @@ class Roscov:
 		if len(pkgs) == 1:
 			pkgs = pkgs[0].split(" ")
 
-		for root, dirs, files in os.walk(os.getcwd())
-			if not "devel" in dirs: 
-				sys.exit("Roscov: Error: devel/ directory not found. Current directory is not a catkin workspace.")
-			if not "src" in dirs:
-				sys.exit("Roscov: Error: src/ directory not found. Current directory is not a catkin workspace.")
-			
-		if len(packages) == 1:
-			roscov.run_package(packages[0])
-		elif not pkgs or pkgs[0] == '.':
+		dirs =  next(os.walk('.'))[1]
+		if not 'devel' in dirs: 
+			sys.exit("Roscov: Error: devel/ directory not found. Directory is not a catkin workspace.")
+		if not 'src' in dirs:
+			sys.exit("Roscov: Error: src/ directory not found. Directory is not a catkin workspace.")
+
+		if pkgs[0] == '.':
+			print("workspace detected, running all packages using catkin list --unformatted")
 			roscov.run_ws(None)
 		else:
-			roscov.run_ws(pkgs)
-
-		# roscov.run(args.packages, quiet_output=args.quiet, threshold=args.threshold, debug_statements=args.debug)
+			if len(pkgs) == 1:
+				print("one package detected")
+			else:
+				print("multiple packages detected")
+			roscov.run(pkgs)
 
 	def _version(self):
 		print("Roscov version:", __version__)
@@ -55,4 +56,4 @@ class Roscov:
 		sys.exit(0)
 
 def main():
-	Roscov()
+	RoscovRunnable()
